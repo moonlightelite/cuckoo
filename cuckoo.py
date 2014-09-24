@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import argparse
+from multiprocessing import Process, Queue
 
 try:
     from lib.cuckoo.common.logo import logo
@@ -63,7 +64,7 @@ def cuckoo_init(quiet=False, debug=False, artwork=False, test=False):
     if test:
         return
 
-    ResultServer()
+    #ResultServer()
 
     os.chdir(cur_path)
 

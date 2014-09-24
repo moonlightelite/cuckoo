@@ -6,6 +6,7 @@ import os
 import time
 import shutil
 import logging
+import multiprocessing
 import Queue
 from threading import Thread, Lock
 
@@ -49,7 +50,7 @@ class AnalysisManager(Thread):
     complete the analysis and store, process and report its results.
     """
 
-    def __init__(self, task, error_queue):
+    def __init__(self, task, error_queue, add, delete):
         """@param task: task object containing the details for the analysis."""
         Thread.__init__(self)
         Thread.daemon = True
@@ -60,6 +61,9 @@ class AnalysisManager(Thread):
         self.storage = ""
         self.binary = ""
         self.machine = None
+
+        self.queue_add = add
+        self.queue_delete = delete
 
     def init_storage(self):
         """Initialize analysis storage folder."""
@@ -230,7 +234,8 @@ class AnalysisManager(Thread):
 
         # At this point we can tell the ResultServer about it.
         try:
-            ResultServer().add_task(self.task, self.machine)
+            #Resultserver().add_task(self.task, self.machine)
+            self.queue_add.put((self.task, self.machine))
         except Exception as e:
             machinery.release(self.machine.label)
             self.errors.put(e)
@@ -290,7 +295,8 @@ class AnalysisManager(Thread):
 
             # After all this, we can make the ResultServer forget about the
             # internal state for this analysis task.
-            ResultServer().del_task(self.task, self.machine)
+            #Resultserver().del_task(self.task, self.machine)
+            self.queue_delete.put((self.task, self.machine))
 
             if dead_machine:
                 # Remove the guest from the database, so that we can assign a
@@ -313,7 +319,7 @@ class AnalysisManager(Thread):
                 machinery.release(self.machine.label)
             except CuckooMachineError as e:
                 log.error("Unable to release machine %s, reason %s. "
-                          "You might need to restore it manually.",
+                          "You might need to restore it manually",
                           self.machine.label, e)
 
         return succeeded
@@ -329,7 +335,7 @@ class AnalysisManager(Thread):
         if self.task.category == "file" and self.cfg.cuckoo.delete_original:
             if not os.path.exists(self.task.target):
                 log.warning("Original file does not exist anymore: \"%s\": "
-                            "File not found.", self.task.target)
+                            "File not found", self.task.target)
             else:
                 try:
                     os.remove(self.task.target)
@@ -422,6 +428,11 @@ class Scheduler:
     def initialize(self):
         """Initialize the machine manager."""
         global machinery
+        self.queue_add = multiprocessing.Queue()
+        self.queue_del = multiprocessing.Queue()
+        p = {'add': self.queue_add, 'delete': self.queue_del}
+        self.resultserver = multiprocessing.Process(target=ResultServer, args=(self.queue_add, self.queue_del), kwargs=p)
+        self.resultserver.start()
 
         machinery_name = self.cfg.cuckoo.machinery
 
@@ -533,8 +544,9 @@ class Scheduler:
                     log.debug("Processing task #%s", task.id)
                     self.total_analysis_count += 1
 
-                    # Initialize and start the analysis manager.
-                    analysis = AnalysisManager(task, errors)
+                    # Initialize the analysis manager.
+                    analysis = AnalysisManager(task, errors, self.queue_add, self.queue_del)
+                    # Start.
                     analysis.start()
 
             # Deal with errors.

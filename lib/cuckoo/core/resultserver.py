@@ -19,6 +19,8 @@ from lib.cuckoo.common.netlog import NetlogParser, BsonParser
 from lib.cuckoo.common.utils import create_folder, Singleton, logtime
 
 log = logging.getLogger(__name__)
+loghandle = logging.FileHandler("/home/timlau/cuckoo_libvirt/ResultServer.log")
+log.addHandler(loghandle)
 
 BUFSIZE = 16 * 1024
 EXTENSIONS = {
@@ -42,39 +44,61 @@ class ResultServer(SocketServer.ThreadingTCPServer, object):
     daemon_threads = True
 
     def __init__(self, *args, **kwargs):
+        log.info("ResultServer starts")
         self.cfg = Config()
         self.analysistasks = {}
         self.analysishandlers = {}
 
-        ip = self.cfg.resultserver.ip
-        port = int(self.cfg.resultserver.port)
+        self.queue_add = args[0]
+        self.queue_delete = args[1]
+
+#        if kwargs[
+        args1=args[2:]
+        kwargs1={}
+        print args1
+        print kwargs1
+
+        try:
+            server_addr = self.cfg.resultserver.ip, self.cfg.resultserver.port
+            SocketServer.ThreadingTCPServer.__init__(self,
+                                                     server_addr,
+                                                     ResultHandler,
+                                                     *args1,
+                                                     **kwargs1)
+        except Exception as e:
+            raise CuckooCriticalError("Unable to bind result server on "
+                                      "{0}:{1}: {2}".format(
+                                          self.cfg.resultserver.ip,
+                                          self.cfg.resultserver.port, str(e)))
+        else:
+            self.addthread = Thread(target=self.add_monitor)
+            self.addthread.setDaemon(True)
+            self.addthread.start()
+            self.delthread = Thread(target=self.del_monitor)
+            self.delthread.setDaemon(True)
+            self.delthread.start()
+            self.servethread = Thread(target=self.serve_forever)
+            self.servethread.setDaemon(True)
+            self.servethread.start()
+            self.addthread.join()
+            self.delthread.join()
+            self.servethread.join()
+
+            log.info("ResultServer initiated. " + str(self.queue_add) + str(self.queue_delete))
+
+    def add_monitor(self):
+        log.info("ResultServer monitoring add_monitor()")
         while True:
-            try:
-                server_addr = ip, port
-                SocketServer.ThreadingTCPServer.__init__(self,
-                                                         server_addr,
-                                                         ResultHandler,
-                                                         *args,
-                                                         **kwargs)
-            except Exception as e:
-                # In Linux /usr/include/asm-generic/errno-base.h.
-                # EADDRINUSE  98 (Address already in use)
-                # In Mac OS X or FreeBSD:
-                # EADDRINUSE 48 (Address already in use)
-                if e.errno == 98 or e.errno == 48:
-                    log.warning("Cannot bind ResultServer on port {0}, "
-                                "trying another port.".format(port))
-                    port += 1
-                else:
-                    raise CuckooCriticalError("Unable to bind ResultServer on "
-                                              "{0}:{1}: {2}".format(
-                                                  ip, port, str(e)))
-            else:
-                log.debug("ResultServer running on {0}:{1}.".format(ip, port))
-                self.servethread = Thread(target=self.serve_forever)
-                self.servethread.setDaemon(True)
-                self.servethread.start()
-                break
+            task,machine = self.queue_add.get(block=True)
+            log.info("ResultServer add_monitor() new item")
+            self.add_task(task, machine)
+
+    def del_monitor(self):
+        log.info("ResultServer monitoring del_monitor()")
+        while True:
+            task,machine = self.queue_delete.get(block=True)
+            log.info("ResultServer del_monitor() new item")
+            self.del_task(task, machine)
 
     def add_task(self, task, machine):
         """Register a task/machine with the ResultServer."""
