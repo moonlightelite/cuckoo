@@ -97,8 +97,10 @@ class ResultServer(SocketServer.ThreadingTCPServer, object):
         log.info("ResultServer monitoring del_monitor()")
         while True:
             task,machine = self.queue_delete.get(block=True)
-            log.info("ResultServer del_monitor() new item")
-            self.del_task(task, machine)
+            t = Thread(target=self.del_task, args=(task,machine))
+            t.setDaemon(True)
+            t.start()
+            #self.del_task(task, machine)
 
     def add_task(self, task, machine):
         """Register a task/machine with the ResultServer."""
